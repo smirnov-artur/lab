@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Flow Field — WebGPU compute · Smirnov Lab</title>
+<meta name="description" content="262 144 particles simulated in a single GPU compute dispatch. three.js WebGPURenderer + TSL, with an honest WebGL fallback.">
+<meta name="theme-color" content="#05060a">
+<meta property="og:title" content="Flow Field — WebGPU compute">
+<meta property="og:description" content="262 144 particles in one GPU compute dispatch. three.js WebGPURenderer + TSL.">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%2305060a'/%3E%3Ccircle cx='16' cy='16' r='6.5' fill='none' stroke='%23e9eef7' stroke-width='2'/%3E%3C/svg%3E">
+<link rel="preload" href="fonts/geist-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="fonts/geistmono-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<canvas id="stage"></canvas>
+<div class="scrim" aria-hidden="true"></div>
+
+<div class="ui">
+
+  <header class="row">
+    <a class="mark" href="https://github.com/smirnov-artur" rel="noopener">Smirnov<span>·</span>Lab</a>
+    <span class="meta">EXP 01 — Flow Field</span>
+  </header>
+
+  <section class="hero">
+    <p class="kicker" id="kicker">WebGPU — TSL compute shader</p>
+    <h1>Flow<br>Field</h1>
+    <p class="lede" id="lede">A quarter of a million particles that never touch the CPU.</p>
+  </section>
+
+  <section class="bottom">
+
+    <div class="notes">
+      <div class="note">
+        <h2>On the GPU</h2>
+        <p id="note-gpu">Position, velocity and lifetime live in storage buffers. One compute dispatch per frame integrates a curl-noise flow field, a containment force and pointer repulsion, then respawns dead particles in place. No data is read back to the CPU.</p>
+      </div>
+      <div class="note">
+        <h2>Why not WebGL</h2>
+        <p>WebGL has no compute stage at all. The same simulation there means packing state into floating-point render targets and ping-ponging them through fragment shaders, bound by what a fragment is allowed to address. Here it is one dispatch, and the buffers are just buffers.</p>
+      </div>
+      <div class="note">
+        <h2>Written in</h2>
+        <p>TSL — Three Shading Language. The shader is a node graph in JavaScript, compiled to WGSL at runtime. Not one line of string GLSL on the WebGPU path.</p>
+      </div>
+    </div>
+
+    <dl class="hud" id="hud">
+      <div><dt>Backend</dt><dd id="v-backend">detecting…</dd></div>
+      <div><dt>Particles</dt><dd id="v-count">—</dd></div>
+      <div><dt>Dispatch</dt><dd id="v-dispatch">—</dd></div>
+      <div><dt>Frame</dt><dd id="v-fps">—</dd></div>
+      <div><dt>Page</dt><dd id="v-weight">—</dd></div>
+    </dl>
+
+  </section>
+
+  <footer class="row">
+    <span>Artur Smirnov · Belgrade UTC+2</span>
+    <nav>
+      <a href="https://smirnov-artur.github.io/webgl" rel="noopener">Portfolio</a>
+      <a href="https://github.com/smirnov-artur" rel="noopener">GitHub</a>
+      <a href="https://t.me/smirnovarturr" rel="noopener">Telegram</a>
+    </nav>
+  </footer>
+
+</div>
+
+<script type="module">
+const $ = ( id ) => document.getElementById( id );
+
+const fmt = new Intl.NumberFormat( 'en-US' );
+const hud = ( { fps, count } ) => {
+	$( 'v-fps' ).textContent = Math.round( fps ) + ' fps';
+	if ( count ) {
+		$( 'v-count' ).textContent = fmt.format( count ).replace( /,/g, ' ' );
+		$( 'v-dispatch' ).textContent = fmt.format( count / 256 ) + ' × 256';
+	}
+};
+
+// page weight, measured rather than claimed
+const weigh = () => {
+	let bytes = 0;
+	for ( const e of performance.getEntriesByType( 'navigation' ) ) bytes += e.transferSize || 0;
+	for ( const e of performance.getEntriesByType( 'resource' ) ) bytes += e.transferSize || 0;
+	if ( bytes > 0 ) $( 'v-weight' ).textContent = Math.round( bytes / 1024 ) + ' KB';
+};
+
+const degrade = ( reason ) => {
+	document.body.dataset.mode = 'fallback';
+	$( 'v-backend' ).textContent = 'WebGL 2 — fallback';
+	$( 'v-count' ).textContent = 'per-pixel';
+	$( 'v-dispatch' ).textContent = 'no compute stage';
+	$( 'kicker' ).textContent = 'WebGL fallback — no compute stage available';
+	$( 'lede' ).textContent = reason === 'no-webgpu'
+		? 'This browser does not expose WebGPU, so you are looking at the fallback.'
+		: 'WebGPU was reported but the adapter failed, so you are looking at the fallback.';
+	$( 'note-gpu' ).innerHTML = '<b>You are seeing the fallback.</b> The same curl-noise field, but evaluated per pixel in a WebGL 2 fragment shader — there are no particles here, because there is no place to keep their state between frames. On WebGPU this page runs 262&nbsp;144 of them in a storage buffer. Chrome, Edge and Safari 26 on desktop will show the real thing.';
+	return import( './fallback.js' ).then( ( m ) => m.start( { canvas: $( 'stage' ), hud } ) );
+};
+
+( async () => {
+
+	const canvas = $( 'stage' );
+	let adapter = null;
+
+	if ( navigator.gpu ) {
+		try { adapter = await navigator.gpu.requestAdapter( { powerPreference: 'high-performance' } ); }
+		catch ( e ) { adapter = null; }
+	}
+
+	if ( ! adapter ) { await degrade( navigator.gpu ? 'no-adapter' : 'no-webgpu' ); weigh(); return; }
+
+	$( 'v-backend' ).textContent = 'WebGPU';
+
+	try {
+		const m = await import( './app.js' );
+		const r = await m.start( { canvas, hud, onFail: ( why ) => degrade( why ) } );
+		if ( r && r.backend === 'webgpu' ) document.body.dataset.mode = 'webgpu';
+	} catch ( err ) {
+		console.error( err );
+		await degrade( 'init-failed' );
+	}
+
+	weigh();
+
+} )();
+
+addEventListener( 'load', () => setTimeout( weigh, 400 ) );
+</script>
+
+</body>
+</html>
